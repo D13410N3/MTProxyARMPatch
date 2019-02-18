@@ -13,7 +13,10 @@ Patch for running MTProto on ARM (including MIPS)
 5) Execute this:
 
 make clean
+
 patch -p1 < arm.patch
+
 make && cd objs/bin
 
-6) Continue with this - https://github.com/TelegramMessenger/MTProxy#running
+
+6) Continue usual setting - https://github.com/TelegramMessenger/MTProxy#running
