@@ -1,0 +1,248 @@
+:100644 100644 67e6771 0000000 M	Makefile
+:100644 100644 beb5620 0000000 M	common/cpuid.c
+:100644 100644 a7a77fe 0000000 M	common/crc32.c
+:100644 100644 302d31a 0000000 M	common/crc32c.c
+:100644 100644 2b12237 0000000 M	common/precise-time.h
+:100644 100644 874b4e0 0000000 M	common/server-functions.h
+
+diff --git a/Makefile b/Makefile
+index 67e6771..93a2c20 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,6 +3,7 @@ DEP	=	dep
+ EXE = ${OBJ}/bin
+ 
+ COMMIT := $(shell git log -1 --pretty=format:"%H")
++CPU_ARCH := $(shell ${CC} -dumpmachine)
+ 
+ ARCH =
+ ifeq ($m, 32)
+@@ -12,7 +13,12 @@ ifeq ($m, 64)
+ ARCH = -m64
+ endif
+ 
+-CFLAGS = $(ARCH) -O3 -std=gnu11 -Wall -mpclmul -march=core2 -mfpmath=sse -mssse3 -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -DCOMMIT=\"${COMMIT}\" -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64
++ifneq (,$(findstring x86,$(CPU_ARCH)))
++  CFLAGS = $(ARCH) -O3 -std=gnu11 -Wall -mpclmul -march=core2 -mfpmath=sse -mssse3 -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -DCOMMIT=\"${COMMIT}\" -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64
++else
++  CFLAGS = $(ARCH) -O3 -std=gnu11 -Wall -march=native  -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -DCOMMIT=\"${COMMIT}\" -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64
++endif
++
+ LDFLAGS = $(ARCH) -ggdb -rdynamic -lm -lrt -lcrypto -lz -lpthread -lcrypto
+ 
+ LIB = ${OBJ}/lib
+diff --git a/common/cpuid.c b/common/cpuid.c
+index beb5620..fedd492 100644
+--- a/common/cpuid.c
++++ b/common/cpuid.c
+@@ -19,13 +19,15 @@
+ */
+ 
+ #include <assert.h>
+-#include <cpuid.h>
+ 
+ #include "cpuid.h"
+ 
+-
+ #define CPUID_MAGIC 0x280147b8
+ 
++#if defined(__x86_64__) || defined(__i386__)
++
++#include <cpuid.h>
++
+ kdb_cpuid_t *kdb_cpuid (void) {
+   static kdb_cpuid_t cached = { .magic = 0 };
+   if (cached.magic) {
+@@ -46,3 +48,14 @@ kdb_cpuid_t *kdb_cpuid (void) {
+   cached.magic = CPUID_MAGIC;
+   return &cached;
+ }
++#else
++kdb_cpuid_t *kdb_cpuid (void) {
++  static kdb_cpuid_t cached = { .magic = 0, .ebx = 0, .ecx = 0, .edx = 0 };
++  if (cached.magic) {
++    assert (cached.magic == CPUID_MAGIC);
++    return &cached;
++  }
++  cached.magic = CPUID_MAGIC;
++  return &cached;
++}
++#endif
+diff --git a/common/crc32.c b/common/crc32.c
+index a7a77fe..79f9671 100644
+--- a/common/crc32.c
++++ b/common/crc32.c
+@@ -425,6 +425,7 @@ unsigned crc32_partial_generic (const void *data, long len, unsigned crc) {
+ //mu(65-bit): 01001110000111110010001100110110000010111001010010110001111010101
+ #define CRC64_REFLECTED_MU   0x9c3e466c172963d5ll
+ 
++#if defined(__x86_64__) || defined(__i386__)
+ static const char mask[64] __attribute__ ((aligned (64))) = {
+   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+@@ -537,6 +538,7 @@ unsigned crc32_partial_clmul (const void *data, long len, unsigned crc) {
+   return crc32_table0[lo & 0xff] ^ crc32_table1[(lo & 0xff00) >> 8] ^ crc32_table2[(lo & 0xff0000) >> 16] ^ crc32_table[lo >> 24] ^ ((unsigned) hi);
+ #endif
+ }
++#endif
+ 
+ /******************** CRC-64 ********************/
+ 
+@@ -622,6 +624,7 @@ uint64_t crc64_partial_one_table (const void *data, long len, uint64_t crc) {
+   return crc;
+ }
+ 
++#if defined(__x86_64__) || defined(__i386__)
+ static uint64_t crc64_barrett_reduction (v2di D) {
+   /* After reflection mu constant is 64 bit */
+   v2di E =  __builtin_ia32_pclmulqdq128 (D, CRC64_MU, 0x00);
+@@ -664,6 +667,7 @@ uint64_t crc64_partial_clmul (const void *data, long len, uint64_t crc) {
+ 
+   return crc64_barrett_reduction (D);
+ }
++#endif
+ 
+ /* {{{ GF-32 */
+ 
+@@ -756,6 +760,7 @@ unsigned gf32_combine_generic (unsigned *powers, unsigned crc1, int64_t len2) {
+   return crc1;
+ }
+ 
++#if defined(__x86_64__) || defined(__i386__)
+ uint64_t gf32_combine_clmul (unsigned *powers, unsigned crc1, int64_t len2) {
+   v2di D;
+   FASTMOV_RMI32_TO_SSE(D, crc1);
+@@ -780,6 +785,7 @@ uint64_t gf32_combine_clmul (unsigned *powers, unsigned crc1, int64_t len2) {
+   D = __builtin_ia32_punpckhqdq128 (D, D);
+   RETURN_SSE_UINT64(D);
+ }
++#endif
+ 
+ /* }}} */
+ 
+@@ -798,6 +804,7 @@ static unsigned compute_crc32_combine_generic (unsigned crc1, unsigned crc2, int
+   #undef N
+ }
+ 
++#if defined(__x86_64__) || defined(__i386__)
+ static unsigned compute_crc32_combine_clmul (unsigned crc1, unsigned crc2, int64_t len2) {
+   static unsigned int crc32_powers[252] __attribute__ ((aligned(16)));
+   if (len2 <= 0) {
+@@ -822,6 +829,7 @@ static unsigned compute_crc32_combine_clmul (unsigned crc1, unsigned crc2, int64
+   crc2 ^= (unsigned) (T >> 32);
+   return (crc32_table0[crc1 & 0xff] ^ crc32_table1[(crc1 & 0xff00) >> 8] ^ crc32_table2[(crc1 & 0xff0000) >> 16] ^ crc32_table[crc1 >> 24]) ^ crc2;
+ }
++#endif
+ 
+ /******************** GF-64 (reversed) ********************/
+ 
+@@ -874,6 +882,7 @@ void crc64_init_power_buf (void) {
+   assert (crc64_power_buf[125]);
+ }
+ 
++#if defined(__x86_64__) || defined(__i386__)
+ static uint64_t compute_crc64_combine_clmul (uint64_t crc1, uint64_t crc2, int64_t len2) {
+   if (len2 <= 0) {
+     return crc1;
+@@ -901,6 +910,7 @@ static uint64_t compute_crc64_combine_clmul (uint64_t crc1, uint64_t crc2, int64
+   }
+   return crc64_barrett_reduction (D) ^ crc2;
+ }
++#endif
+ 
+ static uint64_t compute_crc64_combine_generic (uint64_t crc1, uint64_t crc2, int64_t len2) {
+   if (len2 <= 0) {
+@@ -1035,6 +1045,7 @@ int crc32_check_and_repair (void *input, int l, unsigned *input_crc32, int force
+ 
+ static void crc32_init (void) __attribute__ ((constructor));
+ void crc32_init (void) {
++#if defined(__x86_64__) || defined(__i386__)
+   kdb_cpuid_t *p = kdb_cpuid ();
+   if (p->ecx & 2) {
+     crc32_partial = crc32_partial_clmul;
+@@ -1042,9 +1053,12 @@ void crc32_init (void) {
+     compute_crc32_combine = compute_crc32_combine_clmul;
+     compute_crc64_combine = compute_crc64_combine_clmul;
+   } else {
++#endif
+     crc32_partial = crc32_partial_generic;
+     crc64_partial = crc64_partial_one_table;
+     compute_crc32_combine = compute_crc32_combine_generic;
+     compute_crc64_combine = compute_crc64_combine_generic;
++#if defined(__x86_64__) || defined(__i386__)
+   }
++#endif
+ }
+diff --git a/common/crc32c.c b/common/crc32c.c
+index 302d31a..9d124e8 100644
+--- a/common/crc32c.c
++++ b/common/crc32c.c
+@@ -527,7 +527,7 @@ static unsigned crc32c_partial_sse42_clmul (const void *data, long len, unsigned
+   return crc;
+ }
+ 
+-#else
++#elif defined(__x86_64__) || defined(__i386__)
+ static unsigned crc32c_partial_sse42 (const void *data, long len, unsigned crc) {
+   const char *p = data;
+   while ((((uintptr_t) p) & 3) && (len > 0)) {
+@@ -614,6 +614,7 @@ static unsigned crc32c_combine_generic (unsigned crc1, unsigned crc2, int64_t le
+   return gf32_combine_generic (crc32c_powers, crc1, len2) ^ crc2;
+ }
+ 
++#if defined(__x86_64__) || defined(__i386__)
+ static unsigned crc32c_combine_clmul (unsigned crc1, unsigned crc2, int64_t len2) {
+   static unsigned int crc32c_powers[252] __attribute__ ((aligned(16)));
+   if (len2 <= 0) {
+@@ -639,9 +640,11 @@ static unsigned crc32c_combine_clmul (unsigned crc1, unsigned crc2, int64_t len2
+   );
+   return crc ^ ((unsigned) (T >> 32)) ^ crc2;
+ }
++#endif
+ 
+ static void crc32c_init (void) __attribute__ ((constructor));
+ void crc32c_init (void) {
++#if defined(__x86_64__) || defined(__i386__)
+   kdb_cpuid_t *p = kdb_cpuid ();
+   compute_crc32c_combine = &crc32c_combine_generic;
+   if (p->ecx & (1 << 20)) {
+@@ -655,6 +658,10 @@ void crc32c_init (void) {
+   } else {
+     crc32c_partial = &crc32c_partial_four_tables;
+   }
++#else
++  compute_crc32c_combine = &crc32c_combine_generic;
++  crc32c_partial = &crc32c_partial_four_tables;
++#endif
+ }
+ 
+ crc32_partial_func_t crc32c_partial;
+diff --git a/common/precise-time.h b/common/precise-time.h
+index 2b12237..5475544 100644
+--- a/common/precise-time.h
++++ b/common/precise-time.h
+@@ -34,6 +34,10 @@ static __inline__ unsigned long long rdtsc(void) {
+   __asm__ __volatile__ ("rdtsc" : "=a"(lo), "=d"(hi));
+   return ( (unsigned long long)lo)|( ((unsigned long long)hi)<<32 );
+ }
++#else
++static __inline__ unsigned long long rdtsc(void) {
++  return 0;
++}
+ #endif
+ 
+ /* net-event.h */
+diff --git a/common/server-functions.h b/common/server-functions.h
+index 874b4e0..2a09403 100644
+--- a/common/server-functions.h
++++ b/common/server-functions.h
+@@ -111,7 +111,9 @@ static inline void barrier (void) {
+ }
+ 
+ static inline void mfence (void) {
++#if defined(__x86_64__) || defined(__i386__)
+   asm volatile ("mfence": : :"memory");
++#endif
+ }
+ 
+ //extern struct multicast_host multicast_hosts[];
